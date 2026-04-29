@@ -419,6 +419,22 @@ fn setup_stream_audio_unit(
     sample_format: SampleFormat,
     is_input: bool,
 ) -> Result<AudioUnit, Error> {
+    // Configure AVAudioSession according to any platform-specific hints.
+    if let Some(pc) = config.platform_config {
+        if let PlatformStreamConfig::Ios(ios_cfg) = pc {
+            // SAFETY: AVAudioSession singleton is safe to access.
+            let audio_session = unsafe { AVAudioSession::sharedInstance() };
+            match ios_cfg {
+                IosStreamConfig::Session { category, mode, options: _ } => unsafe {
+                    // Best-effort: set both category and mode. Backends may ignore
+                    // or adjust values according to platform constraints.
+                    let _ = audio_session.setCategory_error(category);
+                    let _ = audio_session.setMode_error(mode);
+                }
+            }
+        }
+    }
+
     // Configure buffer size via AVAudioSession
     if let BufferSize::Fixed(buffer_size) = config.buffer_size {
         set_audio_session_buffer_size(buffer_size, config.sample_rate)?;

@@ -71,6 +71,9 @@ pulseaudio = ["dep:pulseaudio", "dep:futures"]
 # Note: This is typically enabled automatically when targeting wasm32
 wasm-bindgen = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 
+# Optional OS Stream features
+native-stream-configs = [] 
+
 [dependencies]
 dasp_sample = "0.11"
 
@@ -179,7 +182,7 @@ web-sys = { version = "0.3", features = [
 [target.'cfg(target_os = "android")'.dependencies]
 ndk = { version = "0.9", default-features = false, features = [
     "audio",
-    "api-level-26",
+    "api-level-28",
 ] }
 ndk-context = "0.1"
 jni = "0.21"

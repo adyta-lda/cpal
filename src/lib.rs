@@ -387,6 +387,71 @@ pub struct StreamConfig {
     pub channels: ChannelCount,
     pub sample_rate: SampleRate,
     pub buffer_size: BufferSize,
+    /// Optional platform-specific stream configuration.
+    ///
+    /// Use this to pass OS-specific hints to the backend, for example an
+    /// `ndk::audio::AudioInputPreset` on Android or an AVAudioSession-based
+    /// preset on iOS. The contained enums are gated per-platform so using
+    /// these variants on other platforms is a no-op.
+    pub platform_config: Option<PlatformStreamConfig>,
+}
+
+#[cfg(target_os = "android")]
+#[derive(Clone, Debug, PartialEq, Eq, Copy)]
+/// Android-specific stream configuration options.
+pub enum AndroidStreamConfig {
+    /// Hint the Android NDK audio `AudioInputPreset` to the backend.
+    AudioInputPreset(ndk::audio::AudioInputPreset),
+}
+
+/// Platform-specific stream configuration.
+#[derive(Clone, Debug, PartialEq, Eq, Copy)]
+pub enum PlatformStreamConfig {
+    /// Android specific configuration.
+    #[cfg(target_os = "android")]
+    Android(AndroidStreamConfig),
+    /// iOS specific configuration.
+    #[cfg(target_os = "ios")]
+    Ios(IosStreamConfig),
+    /// No platform-specific configuration (default).
+    None,
+}
+
+#[cfg(target_os = "ios")]
+/// iOS-specific stream configuration options.
+#[cfg(target_os = "ios")]
+/// iOS-specific stream configuration options.
+#[derive(Clone, Debug, PartialEq, Eq, Copy)]
+pub struct IosOptions {
+    pub allow_bluetooth: bool,
+    pub default_to_speaker: bool,
+    pub allow_airplay: bool,
+}
+
+#[cfg(target_os = "ios")]
+impl Default for IosOptions {
+    fn default() -> Self {
+        Self {
+            allow_bluetooth: true,
+            default_to_speaker: false,
+            allow_airplay: false,
+        }
+    }
+}
+
+#[cfg(target_os = "ios")]
+#[derive(Clone, Debug, PartialEq, Eq, Copy)]
+pub enum IosStreamConfig {
+    /// Configure AVAudioSession with explicit `category`, `mode` and `options`.
+    ///
+    /// `category` and `mode` are strings to avoid a hard ObjC dependency in
+    /// the public API; backends should interpret these strings (e.g.
+    /// "PlayAndRecord", "playback", "voiceChat").
+    Session {
+        category: &'static str,
+        mode: &'static str,
+        options: IosOptions,
+    },
 }
 
 /// Describes the minimum and maximum supported buffer size for the device
@@ -498,6 +563,7 @@ impl SupportedStreamConfig {
             channels: self.channels,
             sample_rate: self.sample_rate,
             buffer_size: BufferSize::Default,
+            platform_config: None,
         }
     }
 }

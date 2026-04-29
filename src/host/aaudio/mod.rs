@@ -20,6 +20,7 @@ use crate::{
     InterfaceType, OutputCallbackInfo, OutputStreamTimestamp, ResultExt, SampleFormat, SampleRate,
     StreamConfig, StreamInstant, SupportedBufferSize, SupportedStreamConfig,
     SupportedStreamConfigRange,
+    AndroidStreamConfig
 };
 
 extern crate ndk;
@@ -285,6 +286,18 @@ fn configure_for_device(
         builder
     };
     builder = builder.sample_rate(config.sample_rate.try_into().unwrap());
+
+    // Apply Android-specific hints from `StreamConfig::platform_config`.
+    #[cfg(target_os = "android")]
+    {
+        use crate::PlatformStreamConfig;
+        if let Some(pc) = config.platform_config {
+            if let PlatformStreamConfig::Android(AndroidStreamConfig::AudioInputPreset(preset)) = pc {
+                // Best-effort: give the preset to the builder if supported.
+                builder = builder.input_preset(preset);
+            }
+        }
+    }
 
     // Following the pattern from Oboe and Google's AAudio, we let AAudio choose the optimal
     // callback size dynamically by default. See

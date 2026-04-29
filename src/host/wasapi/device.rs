@@ -537,6 +537,7 @@ impl Device {
                             channels: format.channels,
                             sample_rate,
                             buffer_size: BufferSize::Default,
+                            platform_config: None,
                         },
                         sample_format,
                     ) {
