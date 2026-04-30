@@ -396,6 +396,9 @@ pub struct StreamConfig {
     pub platform_config: Option<PlatformStreamConfig>,
 }
 
+/// Re-exports ndk audio input preset
+pub use ndk::audio::AudioInputPreset as AndroidAudioInputPreset;
+
 #[cfg(target_os = "android")]
 #[derive(Clone, Debug, PartialEq, Eq, Copy)]
 /// Android-specific stream configuration options.
