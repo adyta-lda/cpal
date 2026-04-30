@@ -291,9 +291,11 @@ fn configure_for_device(
     {
         use crate::{PlatformStreamConfig, AndroidStreamConfig};
         if let Some(pc) = config.platform_config {
-            if let PlatformStreamConfig::Android(AndroidStreamConfig::AudioInputPreset(preset)) = pc {
+            if let PlatformStreamConfig::Android(android_stream_config) = pc {
                 // Best-effort: give the preset to the builder if supported.
-                builder = builder.input_preset(preset);
+                builder = builder.input_preset(android_stream_config.audio_input_preset);
+                // Best-effort: set the performance mode on the builder if supported.
+                builder = builder.performance_mode(android_stream_config.performance_mode);
             }
         }
     }
