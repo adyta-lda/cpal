@@ -19,8 +19,7 @@ use crate::{
     DeviceId, DeviceType, Error, ErrorKind, FrameCount, InputCallbackInfo, InputStreamTimestamp,
     InterfaceType, OutputCallbackInfo, OutputStreamTimestamp, ResultExt, SampleFormat, SampleRate,
     StreamConfig, StreamInstant, SupportedBufferSize, SupportedStreamConfig,
-    SupportedStreamConfigRange,
-    AndroidStreamConfig
+    SupportedStreamConfigRange
 };
 
 extern crate ndk;
@@ -290,7 +289,7 @@ fn configure_for_device(
     // Apply Android-specific hints from `StreamConfig::platform_config`.
     #[cfg(target_os = "android")]
     {
-        use crate::PlatformStreamConfig;
+        use crate::{PlatformStreamConfig, AndroidStreamConfig};
         if let Some(pc) = config.platform_config {
             if let PlatformStreamConfig::Android(AndroidStreamConfig::AudioInputPreset(preset)) = pc {
                 // Best-effort: give the preset to the builder if supported.
