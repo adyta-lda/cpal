@@ -402,6 +402,9 @@ pub use ndk::audio::AudioInputPreset as AndroidAudioInputPreset;
 /// Re-export ndk audio performance mode
 #[cfg(target_os = "android")]
 pub use ndk::audio::AudioPerformanceMode as AndroidAudioPerformanceMode;
+/// Re-export ndk audio usage
+#[cfg(target_os = "android")]
+pub use ndk::audio::AudioUsage as AndroidAudioUsage;
 
 #[cfg(target_os = "android")]
 #[derive(Clone, Debug, PartialEq, Eq, Copy)]
@@ -411,6 +414,8 @@ pub struct AndroidStreamConfig {
     pub audio_input_preset: ndk::audio::AudioInputPreset,
     /// Hint the Android NDK audio `AudioPerformanceMode` to the backend.
     pub performance_mode: ndk::audio::AudioPerformanceMode,
+    /// Hint the Android NDK audio `AudioUsage` to the backend.
+    pub usage: ndk::audio::AudioUsage,
 }
 
 /// Platform-specific stream configuration.

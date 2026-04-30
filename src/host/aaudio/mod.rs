@@ -296,6 +296,8 @@ fn configure_for_device(
                 builder = builder.input_preset(android_stream_config.audio_input_preset);
                 // Best-effort: set the performance mode on the builder if supported.
                 builder = builder.performance_mode(android_stream_config.performance_mode);
+                // Best-effort: set the usage on the builder if supported.
+                builder = builder.usage(android_stream_config.usage);
             }
         }
     }
