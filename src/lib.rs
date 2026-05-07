@@ -406,6 +406,32 @@ pub use ndk::audio::AudioPerformanceMode as AndroidAudioPerformanceMode;
 #[cfg(target_os = "android")]
 pub use ndk::audio::AudioUsage as AndroidAudioUsage;
 
+/// Re-export AVAudioSession category type alias
+#[cfg(target_os = "ios")]
+pub use objc2_avf_audio::AVAudioSessionCategory;
+/// Re-export AVAudioSession mode type alias
+#[cfg(target_os = "ios")]
+pub use objc2_avf_audio::AVAudioSessionMode;
+/// Re-export AVAudioSession category options bitflags
+#[cfg(target_os = "ios")]
+pub use objc2_avf_audio::AVAudioSessionCategoryOptions;
+/// Re-export AVAudioSession category constants
+#[cfg(target_os = "ios")]
+pub use objc2_avf_audio::{
+    AVAudioSessionCategoryAmbient, AVAudioSessionCategoryAudioProcessing,
+    AVAudioSessionCategoryMultiRoute, AVAudioSessionCategoryPlayAndRecord,
+    AVAudioSessionCategoryPlayback, AVAudioSessionCategoryRecord,
+    AVAudioSessionCategorySoloAmbient,
+};
+/// Re-export AVAudioSession mode constants
+#[cfg(target_os = "ios")]
+pub use objc2_avf_audio::{
+    AVAudioSessionModeDefault, AVAudioSessionModeGameChat, AVAudioSessionModeMeasurement,
+    AVAudioSessionModeMoviePlayback, AVAudioSessionModeSpokenAudio,
+    AVAudioSessionModeVideoChat, AVAudioSessionModeVideoRecording,
+    AVAudioSessionModeVoiceChat, AVAudioSessionModeVoicePrompt,
+};
+
 #[cfg(target_os = "android")]
 #[derive(Clone, Debug, PartialEq, Eq, Copy)]
 /// Android-specific stream configuration options.
@@ -432,39 +458,19 @@ pub enum PlatformStreamConfig {
 }
 
 #[cfg(target_os = "ios")]
-/// iOS-specific stream configuration options.
-#[cfg(target_os = "ios")]
-/// iOS-specific stream configuration options.
-#[derive(Clone, Debug, PartialEq, Eq, Copy)]
-pub struct IosOptions {
-    pub allow_bluetooth: bool,
-    pub default_to_speaker: bool,
-    pub allow_airplay: bool,
-}
-
-#[cfg(target_os = "ios")]
-impl Default for IosOptions {
-    fn default() -> Self {
-        Self {
-            allow_bluetooth: true,
-            default_to_speaker: false,
-            allow_airplay: false,
-        }
-    }
-}
-
-#[cfg(target_os = "ios")]
 #[derive(Clone, Debug, PartialEq, Eq, Copy)]
 pub enum IosStreamConfig {
     /// Configure AVAudioSession with explicit `category`, `mode` and `options`.
     ///
-    /// `category` and `mode` are strings to avoid a hard ObjC dependency in
-    /// the public API; backends should interpret these strings (e.g.
-    /// "PlayAndRecord", "playback", "voiceChat").
+    /// Use the re-exported constants for `category` and `mode`, e.g.
+    /// [`AVAudioSessionCategoryPlayAndRecord`] and [`AVAudioSessionModeVoiceChat`].
+    ///
+    /// Use [`AVAudioSessionCategoryOptions`] bitflags for `options`, e.g.
+    /// `AVAudioSessionCategoryOptions::AllowBluetooth | AVAudioSessionCategoryOptions::DefaultToSpeaker`.
     Session {
-        category: &'static str,
-        mode: &'static str,
-        options: IosOptions,
+        category: &'static objc2_avf_audio::AVAudioSessionCategory,
+        mode: &'static objc2_avf_audio::AVAudioSessionMode,
+        options: objc2_avf_audio::AVAudioSessionCategoryOptions,
     },
 }
 

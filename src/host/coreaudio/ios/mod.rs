@@ -23,9 +23,10 @@ use crate::{
     host::frames_to_duration,
     traits::{DeviceTrait, HostTrait, StreamTrait},
     BufferSize, ChannelCount, Data, DeviceDescription, DeviceDescriptionBuilder, DeviceId, Error,
-    ErrorKind, FrameCount, InputCallbackInfo, InputStreamTimestamp, OutputCallbackInfo,
-    OutputStreamTimestamp, ResultExt, SampleFormat, SampleRate, StreamConfig, StreamInstant,
-    SupportedBufferSize, SupportedStreamConfig, SupportedStreamConfigRange,
+    ErrorKind, FrameCount, InputCallbackInfo, InputStreamTimestamp, IosStreamConfig,
+    OutputCallbackInfo, OutputStreamTimestamp, PlatformStreamConfig, ResultExt, SampleFormat,
+    SampleRate, StreamConfig, StreamInstant, SupportedBufferSize, SupportedStreamConfig,
+    SupportedStreamConfigRange,
 };
 
 pub mod enumerate;
@@ -425,11 +426,8 @@ fn setup_stream_audio_unit(
             // SAFETY: AVAudioSession singleton is safe to access.
             let audio_session = unsafe { AVAudioSession::sharedInstance() };
             match ios_cfg {
-                IosStreamConfig::Session { category, mode, options: _ } => unsafe {
-                    // Best-effort: set both category and mode. Backends may ignore
-                    // or adjust values according to platform constraints.
-                    let _ = audio_session.setCategory_error(category);
-                    let _ = audio_session.setMode_error(mode);
+                IosStreamConfig::Session { category, mode, options } => unsafe {
+                    let _ = audio_session.setCategory_mode_options_error(category, mode, options);
                 }
             }
         }
