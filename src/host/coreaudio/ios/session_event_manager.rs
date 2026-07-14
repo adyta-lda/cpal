@@ -31,12 +31,14 @@ unsafe fn route_change_error(notification: &NSNotification) -> Option<Error> {
             "audio route changed",
         )),
 
+        // Benign, app-initiated route changes. A running RemoteIO unit follows
+        // output-route changes on its own, so these must NOT invalidate the
+        // stream — doing so creates an override⇄rebuild loop when the host app
+        // toggles the speaker (`Override`) or reconfigures the session
+        // (`CategoryChange`). Fall through to `None`: no error, no rebuild.
         AVAudioSessionRouteChangeReason::CategoryChange
         | AVAudioSessionRouteChangeReason::Override
-        | AVAudioSessionRouteChangeReason::RouteConfigurationChange => Some(Error::with_message(
-            ErrorKind::StreamInvalidated,
-            "audio route changed",
-        )),
+        | AVAudioSessionRouteChangeReason::RouteConfigurationChange => None,
 
         AVAudioSessionRouteChangeReason::NoSuitableRouteForCategory => Some(Error::with_message(
             ErrorKind::DeviceNotAvailable,
