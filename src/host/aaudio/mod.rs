@@ -755,4 +755,34 @@ impl StreamTrait for Stream {
         };
         Ok(frames as FrameCount)
     }
+
+    fn granted_config(&self) -> Option<SupportedStreamConfig> {
+        // AAudio treats the builder's sample rate and channel count as a request. Depending on the
+        // API level and on whether the MMAP/low-latency path is granted, it may open the stream at
+        // the device's own format instead — which is exactly what happens on a Bluetooth SCO route
+        // that only runs at 8 or 16 kHz. These getters report what was actually opened.
+        let stream = self.inner.lock().ok()?;
+
+        let sample_format = match stream.format() {
+            ndk::audio::AudioFormat::PCM_I16 => SampleFormat::I16,
+            ndk::audio::AudioFormat::PCM_Float => SampleFormat::F32,
+            _ => return None,
+        };
+
+        let frames = match stream.frames_per_data_callback() {
+            Some(size) if size > 0 => size,
+            _ => stream.frames_per_burst(),
+        };
+        let frames = FrameCount::try_from(frames).ok()?;
+
+        Some(SupportedStreamConfig::new(
+            ChannelCount::try_from(stream.channel_count()).ok()?,
+            SampleRate::try_from(stream.sample_rate()).ok()?,
+            SupportedBufferSize::Range {
+                min: frames,
+                max: frames,
+            },
+            sample_format,
+        ))
+    }
 }

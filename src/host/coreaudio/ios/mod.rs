@@ -12,7 +12,7 @@ use coreaudio::audio_unit::{
 };
 use objc2_audio_toolbox::{kAudioOutputUnitProperty_EnableIO, kAudioUnitProperty_StreamFormat};
 use objc2_avf_audio::AVAudioSession;
-use objc2_core_audio_types::AudioBuffer;
+use objc2_core_audio_types::{AudioBuffer, AudioStreamBasicDescription};
 
 use self::enumerate::{
     default_input_device, default_output_device, Devices, SupportedInputConfigs,
@@ -169,7 +169,8 @@ impl DeviceTrait for Device {
         E: FnMut(Error) + Send + 'static,
     {
         // Configure buffer size and create audio unit
-        let mut audio_unit = setup_stream_audio_unit(config, sample_format, true)?;
+        let (mut audio_unit, granted_config) =
+            setup_stream_audio_unit(config, sample_format, true)?;
 
         // Query device buffer size for latency calculation
         let device_buffer_frames = Some(get_device_buffer_frames());
@@ -177,11 +178,11 @@ impl DeviceTrait for Device {
         let error_callback: ErrorCallbackMutex = Arc::new(Mutex::new(Box::new(error_callback)));
         let session_manager = SessionEventManager::new(error_callback.clone());
 
-        // Set up input callback
+        // Timestamps must be derived from the rate the unit actually runs at, not the requested one.
         setup_input_callback(
             &mut audio_unit,
             sample_format,
-            config.sample_rate,
+            granted_config.sample_rate(),
             device_buffer_frames,
             data_callback,
             move |e| {
@@ -199,6 +200,7 @@ impl DeviceTrait for Device {
                 audio_unit,
             },
             session_manager,
+            granted_config,
         ))
     }
 
@@ -216,7 +218,8 @@ impl DeviceTrait for Device {
         E: FnMut(Error) + Send + 'static,
     {
         // Configure buffer size and create audio unit
-        let mut audio_unit = setup_stream_audio_unit(config, sample_format, false)?;
+        let (mut audio_unit, granted_config) =
+            setup_stream_audio_unit(config, sample_format, false)?;
 
         // Query device buffer size for latency calculation
         let device_buffer_frames = Some(get_device_buffer_frames());
@@ -224,11 +227,11 @@ impl DeviceTrait for Device {
         let error_callback: ErrorCallbackMutex = Arc::new(Mutex::new(Box::new(error_callback)));
         let session_manager = SessionEventManager::new(error_callback.clone());
 
-        // Set up output callback
+        // Timestamps must be derived from the rate the unit actually runs at, not the requested one.
         setup_output_callback(
             &mut audio_unit,
             sample_format,
-            config.sample_rate,
+            granted_config.sample_rate(),
             device_buffer_frames,
             data_callback,
             move |e| {
@@ -246,6 +249,7 @@ impl DeviceTrait for Device {
                 audio_unit,
             },
             session_manager,
+            granted_config,
         ))
     }
 }
@@ -253,13 +257,20 @@ impl DeviceTrait for Device {
 pub struct Stream {
     inner: Mutex<StreamInner>,
     _session_manager: SessionEventManager,
+    /// Format read back from the audio unit at build time, which may differ from the requested one.
+    granted_config: SupportedStreamConfig,
 }
 
 impl Stream {
-    fn new(inner: StreamInner, session_manager: SessionEventManager) -> Self {
+    fn new(
+        inner: StreamInner,
+        session_manager: SessionEventManager,
+        granted_config: SupportedStreamConfig,
+    ) -> Self {
         Self {
             inner: Mutex::new(inner),
             _session_manager: session_manager,
+            granted_config,
         }
     }
 }
@@ -300,6 +311,10 @@ impl StreamTrait for Stream {
 
     fn buffer_size(&self) -> Result<FrameCount, Error> {
         Ok(get_device_buffer_frames() as FrameCount)
+    }
+
+    fn granted_config(&self) -> Option<SupportedStreamConfig> {
+        Some(self.granted_config.clone())
     }
 }
 
@@ -415,11 +430,14 @@ fn get_supported_stream_configs(is_input: bool) -> std::vec::IntoIter<SupportedS
 }
 
 /// Setup audio unit with common configuration for input or output streams.
+///
+/// Returns the unit together with the format the unit actually granted, which is not necessarily
+/// the one in `config` — see the read-back note below.
 fn setup_stream_audio_unit(
     config: StreamConfig,
     sample_format: SampleFormat,
     is_input: bool,
-) -> Result<AudioUnit, Error> {
+) -> Result<(AudioUnit, SupportedStreamConfig), Error> {
     // Configure AVAudioSession according to any platform-specific hints.
     if let Some(pc) = config.platform_config {
         if let PlatformStreamConfig::Ios(ios_cfg) = pc {
@@ -458,7 +476,26 @@ fn setup_stream_audio_unit(
     let asbd = asbd_from_config(config, sample_format);
     audio_unit.set_property(kAudioUnitProperty_StreamFormat, scope, element, Some(&asbd))?;
 
-    Ok(audio_unit)
+    // Read the format back rather than assuming the set took effect. AURemoteIO is already
+    // initialized by this point, and a client format whose sample rate differs from the active
+    // AVAudioSession route — a Bluetooth HFP headset runs the session at 8 or 16 kHz — is exactly
+    // the case it can decline or silently clamp. Reporting what was granted lets the caller
+    // resample instead of mislabelling every sample the data callback delivers.
+    let granted: AudioStreamBasicDescription =
+        audio_unit.get_property(kAudioUnitProperty_StreamFormat, scope, element)?;
+
+    let frames = get_device_buffer_frames() as FrameCount;
+    let granted_config = SupportedStreamConfig::new(
+        granted.mChannelsPerFrame as ChannelCount,
+        granted.mSampleRate as SampleRate,
+        SupportedBufferSize::Range {
+            min: frames,
+            max: frames,
+        },
+        sample_format,
+    );
+
+    Ok((audio_unit, granted_config))
 }
 
 /// Extract AudioBuffer and convert to Data, handling differences between input and output.
