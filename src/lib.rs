@@ -472,6 +472,26 @@ pub enum IosStreamConfig {
         mode: &'static objc2_avf_audio::AVAudioSessionMode,
         options: objc2_avf_audio::AVAudioSessionCategoryOptions,
     },
+    /// The host application owns the `AVAudioSession`; cpal must not manage it.
+    ///
+    /// Two effects, both required for an application that does its own routing:
+    ///
+    /// * cpal never calls `setCategory` — so it cannot clobber the
+    ///   application's `overrideOutputAudioPort` or emit a spurious
+    ///   `.categoryChange`.
+    /// * route changes the application causes itself (`.categoryChange`,
+    ///   `.override`, `.routeConfigurationChange`) are no longer reported as
+    ///   stream errors, so cpal does not rebuild the stream in reaction to the
+    ///   owner's own calls — which would otherwise run concurrently with them.
+    ///   Changes the application cannot have caused (a device disappearing, no
+    ///   suitable route, media services lost or reset) are still reported.
+    ///
+    /// The application becomes responsible for telling the audio layer when a
+    /// route change it initiated has settled, and for handling interruptions.
+    /// Passing no platform config at all suppresses the `setCategory` half but
+    /// leaves the route-change reporting in place, which is usually not what an
+    /// owning application wants.
+    HostOwnedSession,
 }
 
 /// Describes the minimum and maximum supported buffer size for the device

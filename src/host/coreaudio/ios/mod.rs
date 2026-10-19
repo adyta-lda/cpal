@@ -31,7 +31,7 @@ use crate::{
 
 pub mod enumerate;
 mod session_event_manager;
-use session_event_manager::{ErrorCallbackMutex, SessionEventManager};
+use session_event_manager::{ErrorCallbackMutex, RouteChangePolicy, SessionEventManager};
 
 // These days the default of iOS is now F32 and no longer I16
 const SUPPORTED_SAMPLE_FORMAT: SampleFormat = SampleFormat::F32;
@@ -168,6 +168,9 @@ impl DeviceTrait for Device {
         D: FnMut(&Data, &InputCallbackInfo) + Send + 'static,
         E: FnMut(Error) + Send + 'static,
     {
+        // Read before `config` is moved into setup_stream_audio_unit.
+        let policy = route_change_policy(config.platform_config);
+
         // Configure buffer size and create audio unit
         let (mut audio_unit, granted_config) =
             setup_stream_audio_unit(config, sample_format, true)?;
@@ -176,7 +179,7 @@ impl DeviceTrait for Device {
         let device_buffer_frames = Some(get_device_buffer_frames());
 
         let error_callback: ErrorCallbackMutex = Arc::new(Mutex::new(Box::new(error_callback)));
-        let session_manager = SessionEventManager::new(error_callback.clone());
+        let session_manager = SessionEventManager::new(error_callback.clone(), policy);
 
         // Timestamps must be derived from the rate the unit actually runs at, not the requested one.
         setup_input_callback(
@@ -217,6 +220,9 @@ impl DeviceTrait for Device {
         D: FnMut(&mut Data, &OutputCallbackInfo) + Send + 'static,
         E: FnMut(Error) + Send + 'static,
     {
+        // Read before `config` is moved into setup_stream_audio_unit.
+        let policy = route_change_policy(config.platform_config);
+
         // Configure buffer size and create audio unit
         let (mut audio_unit, granted_config) =
             setup_stream_audio_unit(config, sample_format, false)?;
@@ -225,7 +231,7 @@ impl DeviceTrait for Device {
         let device_buffer_frames = Some(get_device_buffer_frames());
 
         let error_callback: ErrorCallbackMutex = Arc::new(Mutex::new(Box::new(error_callback)));
-        let session_manager = SessionEventManager::new(error_callback.clone());
+        let session_manager = SessionEventManager::new(error_callback.clone(), policy);
 
         // Timestamps must be derived from the rate the unit actually runs at, not the requested one.
         setup_output_callback(
@@ -433,6 +439,17 @@ fn get_supported_stream_configs(is_input: bool) -> std::vec::IntoIter<SupportedS
 ///
 /// Returns the unit together with the format the unit actually granted, which is not necessarily
 /// the one in `config` — see the read-back note below.
+/// Which route changes should invalidate the stream, given the caller's
+/// platform config. `HostOwnedSession` is the only thing that narrows it.
+fn route_change_policy(platform_config: Option<PlatformStreamConfig>) -> RouteChangePolicy {
+    match platform_config {
+        Some(PlatformStreamConfig::Ios(IosStreamConfig::HostOwnedSession)) => {
+            RouteChangePolicy::ExternalOnly
+        }
+        _ => RouteChangePolicy::AnyChange,
+    }
+}
+
 fn setup_stream_audio_unit(
     config: StreamConfig,
     sample_format: SampleFormat,
@@ -447,6 +464,8 @@ fn setup_stream_audio_unit(
                 IosStreamConfig::Session { category, mode, options } => unsafe {
                     let _ = audio_session.setCategory_mode_options_error(category, mode, options);
                 }
+                // The application owns the session: touch nothing.
+                IosStreamConfig::HostOwnedSession => {}
             }
         }
     }
