@@ -485,6 +485,27 @@ pub trait StreamTrait {
     /// stream's data callback via [`crate::InputStreamTimestamp::callback`] and
     /// [`crate::OutputStreamTimestamp::callback`], so durations between them are meaningful.
     fn now(&self) -> StreamInstant;
+
+    /// Returns the format the backend actually granted for this stream, when it can be queried
+    /// from the driver.
+    ///
+    /// A backend may open a stream at a different sample rate or channel count than the one
+    /// requested in the [`StreamConfig`]: AAudio will substitute the device's own rate rather than
+    /// fail, and CoreAudio's `AURemoteIO` may not accept a client format change. The requested
+    /// config is therefore not evidence of what the data callback actually delivers.
+    ///
+    /// Callers that resample, or that otherwise interpret the raw sample stream as having a
+    /// particular rate, must trust this value over what they asked for. A mismatch that goes
+    /// unnoticed does not surface as an error anywhere — it is heard as wrong-pitch audio.
+    ///
+    /// # Implementation notes
+    ///
+    /// The default implementation returns `None`, meaning "no better information than what you
+    /// requested". Backends that can interrogate the driver should override it. `None` is never a
+    /// promise that the request was honoured, only that this backend cannot tell you.
+    fn granted_config(&self) -> Option<SupportedStreamConfig> {
+        None
+    }
 }
 
 /// Compile-time assertion that a stream type implements [`Send`].
