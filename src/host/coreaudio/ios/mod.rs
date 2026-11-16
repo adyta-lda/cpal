@@ -31,6 +31,7 @@ use crate::{
 
 pub mod enumerate;
 mod session_event_manager;
+mod voice_processing;
 use session_event_manager::{ErrorCallbackMutex, RouteChangePolicy, SessionEventManager};
 
 // These days the default of iOS is now F32 and no longer I16
@@ -171,6 +172,23 @@ impl DeviceTrait for Device {
         // Read before `config` is moved into setup_stream_audio_unit.
         let policy = route_change_policy(config.platform_config);
 
+        if uses_voice_processing(config.platform_config) {
+            apply_buffer_size(&config)?;
+            let error_callback: ErrorCallbackMutex = Arc::new(Mutex::new(Box::new(error_callback)));
+            let session_manager = SessionEventManager::new(error_callback.clone(), policy);
+            let (attachment, granted_config) = voice_processing::attach_input(
+                &asbd_from_config(config, sample_format),
+                sample_format,
+                Box::new(data_callback),
+                error_callback,
+            )?;
+            return Ok(Stream::new(
+                StreamInner::VoiceProcessing(attachment),
+                session_manager,
+                granted_config,
+            ));
+        }
+
         // Configure buffer size and create audio unit
         let (mut audio_unit, granted_config) =
             setup_stream_audio_unit(config, sample_format, true)?;
@@ -198,7 +216,7 @@ impl DeviceTrait for Device {
         audio_unit.start()?;
 
         Ok(Stream::new(
-            StreamInner {
+            StreamInner::Unit {
                 playing: true,
                 audio_unit,
             },
@@ -222,6 +240,23 @@ impl DeviceTrait for Device {
     {
         // Read before `config` is moved into setup_stream_audio_unit.
         let policy = route_change_policy(config.platform_config);
+
+        if uses_voice_processing(config.platform_config) {
+            apply_buffer_size(&config)?;
+            let error_callback: ErrorCallbackMutex = Arc::new(Mutex::new(Box::new(error_callback)));
+            let session_manager = SessionEventManager::new(error_callback.clone(), policy);
+            let (attachment, granted_config) = voice_processing::attach_output(
+                &asbd_from_config(config, sample_format),
+                sample_format,
+                Box::new(data_callback),
+                error_callback,
+            )?;
+            return Ok(Stream::new(
+                StreamInner::VoiceProcessing(attachment),
+                session_manager,
+                granted_config,
+            ));
+        }
 
         // Configure buffer size and create audio unit
         let (mut audio_unit, granted_config) =
@@ -250,7 +285,7 @@ impl DeviceTrait for Device {
         audio_unit.start()?;
 
         Ok(Stream::new(
-            StreamInner {
+            StreamInner::Unit {
                 playing: true,
                 audio_unit,
             },
@@ -286,12 +321,19 @@ impl StreamTrait for Stream {
         let mut stream = self.inner.lock().map_err(|_| {
             Error::with_message(ErrorKind::StreamInvalidated, "stream lock poisoned")
         })?;
-        if !stream.playing {
-            stream
-                .audio_unit
-                .start()
-                .context("failed to start audio unit")?;
-            stream.playing = true;
+        match &mut *stream {
+            StreamInner::Unit {
+                playing,
+                audio_unit,
+            } => {
+                if !*playing {
+                    audio_unit.start().context("failed to start audio unit")?;
+                    *playing = true;
+                }
+            }
+            StreamInner::VoiceProcessing(attachment) => attachment
+                .play()
+                .context("failed to start the voice-processing unit")?,
         }
         Ok(())
     }
@@ -300,12 +342,19 @@ impl StreamTrait for Stream {
         let mut stream = self.inner.lock().map_err(|_| {
             Error::with_message(ErrorKind::StreamInvalidated, "stream lock poisoned")
         })?;
-        if stream.playing {
-            stream
-                .audio_unit
-                .stop()
-                .context("failed to stop audio unit")?;
-            stream.playing = false;
+        match &mut *stream {
+            StreamInner::Unit {
+                playing,
+                audio_unit,
+            } => {
+                if *playing {
+                    audio_unit.stop().context("failed to stop audio unit")?;
+                    *playing = false;
+                }
+            }
+            StreamInner::VoiceProcessing(attachment) => attachment
+                .pause()
+                .context("failed to stop the voice-processing unit")?,
         }
         Ok(())
     }
@@ -324,9 +373,15 @@ impl StreamTrait for Stream {
     }
 }
 
-struct StreamInner {
-    playing: bool,
-    audio_unit: AudioUnit,
+enum StreamInner {
+    /// The stream's own `RemoteIO` unit.
+    Unit {
+        playing: bool,
+        audio_unit: AudioUnit,
+    },
+    /// The stream's hold on the shared `VoiceProcessingIO` unit
+    /// ([`IosStreamConfig::HostOwnedVoiceProcessing`]).
+    VoiceProcessing(voice_processing::Attachment),
 }
 
 fn create_audio_unit() -> Result<AudioUnit, coreaudio::Error> {
@@ -443,11 +498,31 @@ fn get_supported_stream_configs(is_input: bool) -> std::vec::IntoIter<SupportedS
 /// platform config. `HostOwnedSession` is the only thing that narrows it.
 fn route_change_policy(platform_config: Option<PlatformStreamConfig>) -> RouteChangePolicy {
     match platform_config {
-        Some(PlatformStreamConfig::Ios(IosStreamConfig::HostOwnedSession)) => {
-            RouteChangePolicy::ExternalOnly
-        }
+        Some(PlatformStreamConfig::Ios(
+            IosStreamConfig::HostOwnedSession | IosStreamConfig::HostOwnedVoiceProcessing,
+        )) => RouteChangePolicy::ExternalOnly,
         _ => RouteChangePolicy::AnyChange,
     }
+}
+
+/// Whether the stream attaches to the shared `VoiceProcessingIO` unit rather
+/// than opening its own `RemoteIO` unit.
+fn uses_voice_processing(platform_config: Option<PlatformStreamConfig>) -> bool {
+    matches!(
+        platform_config,
+        Some(PlatformStreamConfig::Ios(
+            IosStreamConfig::HostOwnedVoiceProcessing
+        ))
+    )
+}
+
+/// Honour a fixed buffer-size request through the session, as
+/// `setup_stream_audio_unit` does for `RemoteIO` streams.
+fn apply_buffer_size(config: &StreamConfig) -> Result<(), Error> {
+    if let BufferSize::Fixed(buffer_size) = config.buffer_size {
+        set_audio_session_buffer_size(buffer_size, config.sample_rate)?;
+    }
+    Ok(())
 }
 
 fn setup_stream_audio_unit(
@@ -461,11 +536,15 @@ fn setup_stream_audio_unit(
             // SAFETY: AVAudioSession singleton is safe to access.
             let audio_session = unsafe { AVAudioSession::sharedInstance() };
             match ios_cfg {
-                IosStreamConfig::Session { category, mode, options } => unsafe {
+                IosStreamConfig::Session {
+                    category,
+                    mode,
+                    options,
+                } => unsafe {
                     let _ = audio_session.setCategory_mode_options_error(category, mode, options);
-                }
+                },
                 // The application owns the session: touch nothing.
-                IosStreamConfig::HostOwnedSession => {}
+                IosStreamConfig::HostOwnedSession | IosStreamConfig::HostOwnedVoiceProcessing => {}
             }
         }
     }

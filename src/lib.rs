@@ -492,6 +492,23 @@ pub enum IosStreamConfig {
     /// leaves the route-change reporting in place, which is usually not what an
     /// owning application wants.
     HostOwnedSession,
+    /// Everything [`HostOwnedSession`](Self::HostOwnedSession) does, and the
+    /// input and output streams share one `VoiceProcessingIO` unit instead of
+    /// opening a `RemoteIO` unit each.
+    ///
+    /// This is the shape iOS expects for a voice call: one full-duplex unit,
+    /// with Apple's echo cancellation, noise suppression and AGC applied to
+    /// the mic, and the system's call routing (CallKit's speaker button)
+    /// tracking the route through it. With two `RemoteIO` units CallKit can
+    /// move audio to the speaker and still read the route back as the
+    /// receiver.
+    ///
+    /// Build at most one input and one output stream with this config at a
+    /// time; they attach to the same unit, which runs while either is playing
+    /// and is disposed when both are dropped. Because Apple's processing
+    /// already cancels echo, an application should not run its own echo
+    /// canceller on the input as well.
+    HostOwnedVoiceProcessing,
 }
 
 /// Describes the minimum and maximum supported buffer size for the device
