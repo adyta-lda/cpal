@@ -102,7 +102,9 @@ impl Slots {
 }
 
 struct UnitState {
-    unit: AudioUnit,
+    /// `None` only between disposing a unit and creating its replacement, so
+    /// that two voice processors never exist at once.
+    unit: Option<AudioUnit>,
     sample_format: SampleFormat,
     input_format: AudioStreamBasicDescription,
     output_format: AudioStreamBasicDescription,
@@ -134,31 +136,112 @@ fn lock_err() -> Error {
     )
 }
 
-/// Create a `VoiceProcessingIO` unit with both buses enabled, the given
-/// client formats, and callbacks dispatching to `slots`. Not started.
+/// `kAudioUnitErr_MultipleVoiceProcessors`: another voice-processing unit
+/// still exists. The audio server tears a disposed unit down asynchronously,
+/// so this is what a new unit gets when created right after the previous one
+/// (back-to-back calls, a stream rebuild).
+const MULTIPLE_VOICE_PROCESSORS: i32 = -66635;
+/// How often, and how far apart, creation is retried on
+/// [`MULTIPLE_VOICE_PROCESSORS`]: up to about a second in all. WebRTC's iOS
+/// voice-processing unit works around the same failure the same way.
+const CREATE_ATTEMPTS: u32 = 10;
+const CREATE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Turn a coreaudio error into a cpal error naming the step that failed.
+fn step_err(step: &'static str) -> impl FnOnce(coreaudio::Error) -> Error {
+    move |e| {
+        Error::with_message(
+            ErrorKind::DeviceNotAvailable,
+            format!(
+                "VoiceProcessingIO: {step} failed (OSStatus {})",
+                e.as_os_status()
+            ),
+        )
+    }
+}
+
+/// [`create_unit_once`], retried while the audio server still holds a
+/// previous voice processor.
 fn create_unit(
     slots: &Arc<Slots>,
     sample_format: SampleFormat,
     input_format: &AudioStreamBasicDescription,
     output_format: &AudioStreamBasicDescription,
 ) -> Result<AudioUnit, Error> {
-    let mut unit = AudioUnit::new(IOType::VoiceProcessingIO)?;
-    // Bus enablement and formats are set before initialization.
-    unit.uninitialize()?;
+    let mut attempt = 1;
+    loop {
+        match create_unit_once(slots, sample_format, input_format, output_format) {
+            Err(CreateError::Busy(_)) if attempt < CREATE_ATTEMPTS => {
+                attempt += 1;
+                std::thread::sleep(CREATE_RETRY_DELAY);
+            }
+            Err(CreateError::Busy(e)) | Err(CreateError::Other(e)) => return Err(e),
+            Ok(unit) => return Ok(unit),
+        }
+    }
+}
 
+enum CreateError {
+    /// Another voice processor still exists; worth retrying.
+    Busy(Error),
+    Other(Error),
+}
+
+/// Create a `VoiceProcessingIO` unit with both buses enabled, the given
+/// client formats, and callbacks dispatching to `slots`. Not started.
+///
+/// Created uninitialized and initialized exactly once, after configuration:
+/// initializing, uninitializing and reinitializing a voice processor back to
+/// back is itself enough to trip [`MULTIPLE_VOICE_PROCESSORS`].
+fn create_unit_once(
+    slots: &Arc<Slots>,
+    sample_format: SampleFormat,
+    input_format: &AudioStreamBasicDescription,
+    output_format: &AudioStreamBasicDescription,
+) -> Result<AudioUnit, CreateError> {
+    let classify = |step: &'static str| {
+        move |e: coreaudio::Error| {
+            let busy = e.as_os_status() == MULTIPLE_VOICE_PROCESSORS;
+            let e = step_err(step)(e);
+            if busy {
+                CreateError::Busy(e)
+            } else {
+                CreateError::Other(e)
+            }
+        }
+    };
+
+    let mut unit = AudioUnit::new_uninitialized(IOType::VoiceProcessingIO)
+        .map_err(classify("AudioComponentInstanceNew"))?;
+    configure_unit(&mut unit, slots, sample_format, input_format, output_format)
+        .map_err(CreateError::Other)?;
+    unit.initialize().map_err(classify("AudioUnitInitialize"))?;
+    Ok(unit)
+}
+
+/// Bus enablement, client formats and callbacks, on an uninitialized unit.
+fn configure_unit(
+    unit: &mut AudioUnit,
+    slots: &Arc<Slots>,
+    sample_format: SampleFormat,
+    input_format: &AudioStreamBasicDescription,
+    output_format: &AudioStreamBasicDescription,
+) -> Result<(), Error> {
     let enable = 1u32;
     unit.set_property(
         kAudioOutputUnitProperty_EnableIO,
         Scope::Input,
         Element::Input,
         Some(&enable),
-    )?;
+    )
+    .map_err(step_err("enable input bus"))?;
     unit.set_property(
         kAudioOutputUnitProperty_EnableIO,
         Scope::Output,
         Element::Output,
         Some(&enable),
-    )?;
+    )
+    .map_err(step_err("enable output bus"))?;
 
     let (scope, element) = Direction::Input.scope_element();
     unit.set_property(
@@ -166,30 +249,25 @@ fn create_unit(
         scope,
         element,
         Some(input_format),
-    )?;
+    )
+    .map_err(step_err("set input format"))?;
     let (scope, element) = Direction::Output.scope_element();
     unit.set_property(
         kAudioUnitProperty_StreamFormat,
         scope,
         element,
         Some(output_format),
-    )?;
+    )
+    .map_err(step_err("set output format"))?;
 
     install_output_callback(
-        &mut unit,
+        unit,
         slots.clone(),
         sample_format,
         output_format.mSampleRate,
     )?;
-    install_input_callback(
-        &mut unit,
-        slots.clone(),
-        sample_format,
-        input_format.mSampleRate,
-    )?;
-
-    unit.initialize()?;
-    Ok(unit)
+    install_input_callback(unit, slots.clone(), sample_format, input_format.mSampleRate)?;
+    Ok(())
 }
 
 fn install_output_callback(
@@ -320,7 +398,7 @@ impl SharedUnit {
         let unit = create_unit(&slots, sample_format, &input_format, &output_format)?;
         let shared = Arc::new(SharedUnit {
             state: Mutex::new(UnitState {
-                unit,
+                unit: Some(unit),
                 sample_format,
                 input_format,
                 output_format,
@@ -351,26 +429,30 @@ impl SharedUnit {
                 Direction::Output => (state.input_format, *format),
             };
             let was_running = state.running;
-            if was_running {
-                state.unit.stop()?;
-                state.running = false;
-            }
-            // The old unit is disposed when replaced. Its callbacks hold their
-            // own `Arc<Slots>`, so the slots survive it.
-            state.unit = create_unit(&self.slots, sample_format, &input_format, &output_format)?;
+            // Dispose of the old unit *before* creating its replacement: two
+            // voice processors may not exist at once. Dropping it stops it.
+            // Its callbacks hold their own `Arc<Slots>`, so the slots survive.
+            state.unit = None;
+            state.running = false;
+            state.unit = Some(create_unit(
+                &self.slots,
+                sample_format,
+                &input_format,
+                &output_format,
+            )?);
             state.sample_format = sample_format;
             state.input_format = input_format;
             state.output_format = output_format;
             if was_running {
-                state.unit.start()?;
+                state.unit_mut()?.start().map_err(step_err("start"))?;
                 state.running = true;
             }
         }
         let (scope, element) = direction.scope_element();
-        let granted: AudioStreamBasicDescription =
-            state
-                .unit
-                .get_property(kAudioUnitProperty_StreamFormat, scope, element)?;
+        let granted: AudioStreamBasicDescription = state
+            .unit_mut()?
+            .get_property(kAudioUnitProperty_StreamFormat, scope, element)
+            .map_err(step_err("read back format"))?;
         Ok(granted)
     }
 
@@ -379,13 +461,24 @@ impl SharedUnit {
         let mut state = self.state.lock().map_err(|_| lock_err())?;
         let want = self.slots.any_playing();
         if want && !state.running {
-            state.unit.start()?;
+            state.unit_mut()?.start().map_err(step_err("start"))?;
             state.running = true;
         } else if !want && state.running {
-            state.unit.stop()?;
+            state.unit_mut()?.stop().map_err(step_err("stop"))?;
             state.running = false;
         }
         Ok(())
+    }
+}
+
+impl UnitState {
+    fn unit_mut(&mut self) -> Result<&mut AudioUnit, Error> {
+        self.unit.as_mut().ok_or_else(|| {
+            Error::with_message(
+                ErrorKind::StreamInvalidated,
+                "the shared VoiceProcessingIO unit failed to rebuild",
+            )
+        })
     }
 }
 
